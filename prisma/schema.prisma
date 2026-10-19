@@ -1,0 +1,130 @@
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model User {
+  id             String             @id @default(cuid())
+  name           String
+  email          String             @unique
+  role           String             // "STUDENT", "MENTOR", "COORDINATOR", "LECTURER"
+  department     String?
+  semester       Int?
+  section        String?
+  rollNumber     String?
+  githubUsername String?
+  mentorId       String?
+  mentor         User?              @relation("MentorMentees", fields: [mentorId], references: [id])
+  mentees        User[]             @relation("MentorMentees")
+  subjectsTaught Subject[]          @relation("LecturerSubjects")
+  baselines      AttendanceBaseline[]
+  applications   EventApplication[]
+  attendanceRecords ClassAttendanceRecord[]
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+}
+
+model Subject {
+  id          String             @id @default(cuid())
+  name        String
+  code        String             @unique
+  importance  String             @default("MEDIUM") // "HIGH", "MEDIUM", "LOW"
+  lecturerId  String?
+  lecturer    User?              @relation("LecturerSubjects", fields: [lecturerId], references: [id])
+  baselines   AttendanceBaseline[]
+  timetableSlots TimetableSlot[]
+  attendanceRecords ClassAttendanceRecord[]
+  createdAt   DateTime           @default(now())
+  updatedAt   DateTime           @updatedAt
+}
+
+model AttendanceBaseline {
+  id                String   @id @default(cuid())
+  studentId         String
+  subjectId         String
+  baselineConducted Int      @default(0)
+  baselineAttended  Int      @default(0)
+  asOfDate          DateTime @default(now())
+  student           User     @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  subject           Subject  @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+
+  @@unique([studentId, subjectId])
+}
+
+model TimetableSlot {
+  id         String   @id @default(cuid())
+  section    String   // e.g. "5A"
+  dayOfWeek  Int      // 1 = Monday, 2 = Tuesday, ... 7 = Sunday
+  startTime  String   // "09:00"
+  endTime    String   // "10:00"
+  room       String?
+  subjectId  String
+  subject    Subject  @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+}
+
+model COEEvent {
+  id             String   @id @default(cuid())
+  date           String   // "YYYY-MM-DD"
+  type           String   // "HOLIDAY", "IAT", "TIMETABLE_SWAP", "SPECIAL_EVENT"
+  highlightColor String?  // "YELLOW", "GREY", "NONE"
+  swapDayOfWeek  Int?     // Target day timetable to follow (1=Mon, ..., 7=Sun)
+  title          String
+  notes          String?
+  createdAt      DateTime @default(now())
+}
+
+model ExtracurricularEvent {
+  id              String   @id @default(cuid())
+  title           String
+  category        String   // "HACKATHON", "PROJECT", "SPORTS", "MEDICAL", "EXAM", "WEBINAR", "INTERNSHIP"
+  startDate       DateTime
+  endDate         DateTime
+  location        String?
+  description     String?
+  isPublicListing Boolean  @default(true)
+  link            String?
+  createdAt       DateTime @default(now())
+}
+
+model EventApplication {
+  id                  String   @id @default(cuid())
+  studentId           String
+  title               String
+  category            String   // "HACKATHON", "PROJECT", "SPORTS", "MEDICAL", "EXAM", "WEBINAR", "INTERNSHIP"
+  startDate           DateTime
+  endDate             DateTime
+  description         String?
+  status              String   @default("PENDING_APPROVAL") // "PENDING_APPROVAL", "APPROVED", "REJECTED", "FLAGGED_BY_COORDINATOR"
+  proofType           String?  // "GITHUB_REPO", "CERTIFICATE", "MEDICAL_SLIP", "TICKET", "OTHER"
+  proofUrl            String?
+  githubRepoUrl       String?
+  githubUsername      String?
+  githubCommitCount   Int?
+  githubSummary       String?
+  proofVerified       Boolean  @default(false)
+  mentorRemarks       String?
+  coordinatorFlagNotes String?
+  student             User     @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  attendanceRecords   ClassAttendanceRecord[]
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+}
+
+model ClassAttendanceRecord {
+  id            String            @id @default(cuid())
+  studentId     String
+  subjectId     String
+  date          String            // "YYYY-MM-DD"
+  slotStartTime String            // "09:00"
+  status        String            // "ATTENDED", "ABSENT", "ON_DUTY"
+  applicationId String?
+  student       User              @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  subject       Subject           @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+  application   EventApplication? @relation(fields: [applicationId], references: [id], onDelete: SetNull)
+
+  @@unique([studentId, subjectId, date, slotStartTime])
+}
