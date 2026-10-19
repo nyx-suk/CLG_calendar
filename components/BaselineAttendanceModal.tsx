@@ -25,7 +25,7 @@ export function BaselineAttendanceModal({
       subjectId: s.subjectId,
       subjectName: s.subjectName,
       subjectCode: s.subjectCode,
-      baselineConducted: s.totalConducted - s.odApproved, // approximate past snapshot
+      baselineConducted: s.totalConducted - s.odApproved,
       baselineAttended: s.physicallyAttended,
     }))
   );
@@ -56,26 +56,26 @@ export function BaselineAttendanceModal({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
-      <div className="bg-slate-900 border border-slate-700 w-full max-w-2xl rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-xs animate-in fade-in duration-200">
+      <div className="bg-white border border-slate-200 w-full max-w-2xl rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
         {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-800 bg-slate-900/50">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 bg-slate-50/70">
           <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-lg bg-emerald-500/20 text-emerald-400 flex items-center justify-center">
+            <div className="w-8 h-8 rounded-lg bg-emerald-50 text-emerald-600 border border-emerald-100 flex items-center justify-center">
               <Layers className="w-4 h-4" />
             </div>
             <div>
-              <h3 className="text-base font-semibold text-white">
+              <h3 className="text-base font-bold text-slate-900">
                 Mid-Semester Baseline Ingestion
               </h3>
-              <p className="text-xs text-slate-400">
+              <p className="text-xs text-slate-500">
                 Update prior attendance counts without entering old classes manually
               </p>
             </div>
           </div>
           <button
             onClick={onClose}
-            className="text-slate-400 hover:text-white p-1 rounded-lg hover:bg-slate-800 transition"
+            className="text-slate-400 hover:text-slate-700 p-1.5 rounded-lg hover:bg-slate-100 transition"
           >
             <X className="w-5 h-5" />
           </button>
@@ -83,27 +83,27 @@ export function BaselineAttendanceModal({
 
         {/* Content */}
         <form onSubmit={handleSave} className="p-6 overflow-y-auto space-y-4">
-          <div className="p-3.5 rounded-xl bg-slate-950 border border-emerald-500/20 text-xs text-slate-300 flex items-start gap-2.5">
-            <Sparkles className="w-4 h-4 text-emerald-400 flex-shrink-0 mt-0.5" />
+          <div className="p-3.5 rounded-xl bg-emerald-50 border border-emerald-200 text-xs text-emerald-900 flex items-start gap-2.5">
+            <Sparkles className="w-4 h-4 text-emerald-600 flex-shrink-0 mt-0.5" />
             <div>
-              <span className="font-semibold text-emerald-300">Ongoing Semester Snapshot:</span>
-              <p className="mt-0.5 text-slate-400">
-                Enter your total classes conducted and attended so far from your college portal / ERP.
-                The virtual calendar engine will automatically track new upcoming lectures on top of this baseline.
+              <span className="font-bold text-emerald-950">Ongoing Semester Snapshot:</span>
+              <p className="mt-0.5 text-emerald-800">
+                Enter your total classes conducted and attended so far from your college ERP/portal.
+                New upcoming lectures on your virtual calendar will dynamically increment on top of this snapshot.
               </p>
             </div>
           </div>
 
           {error && (
-            <div className="p-3 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-300 text-xs flex items-center gap-2">
+            <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs flex items-center gap-2">
               <AlertCircle className="w-4 h-4 flex-shrink-0" />
               <span>{error}</span>
             </div>
           )}
 
-          <div className="border border-slate-800 rounded-xl overflow-hidden">
+          <div className="border border-slate-200 rounded-xl overflow-hidden shadow-xs">
             <table className="w-full text-left text-xs">
-              <thead className="bg-slate-950 text-slate-400 border-b border-slate-800">
+              <thead className="bg-slate-50 text-slate-600 border-b border-slate-200 font-semibold">
                 <tr>
                   <th className="py-2.5 px-3">Subject</th>
                   <th className="py-2.5 px-3 w-32">Conducted So Far</th>
@@ -111,17 +111,17 @@ export function BaselineAttendanceModal({
                   <th className="py-2.5 px-3 w-24 text-right">Current %</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-800/60 bg-slate-900/50">
+              <tbody className="divide-y divide-slate-100 bg-white">
                 {items.map((item, idx) => {
                   const pct =
                     item.baselineConducted > 0
                       ? ((item.baselineAttended / item.baselineConducted) * 100).toFixed(1)
                       : "100.0";
                   return (
-                    <tr key={item.subjectId} className="hover:bg-slate-800/40 transition">
+                    <tr key={item.subjectId} className="hover:bg-slate-50/60 transition">
                       <td className="py-2.5 px-3">
-                        <div className="font-medium text-slate-200">{item.subjectName}</div>
-                        <div className="text-[10px] text-slate-400 font-mono">{item.subjectCode}</div>
+                        <div className="font-semibold text-slate-800">{item.subjectName}</div>
+                        <div className="text-[10px] text-slate-500 font-mono">{item.subjectCode}</div>
                       </td>
                       <td className="py-2.5 px-3">
                         <input
@@ -131,7 +131,7 @@ export function BaselineAttendanceModal({
                           onChange={(e) =>
                             handleChange(idx, "baselineConducted", parseInt(e.target.value) || 0)
                           }
-                          className="w-full bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1 text-white font-mono text-xs focus:ring-1 focus:ring-emerald-500"
+                          className="w-full bg-slate-50 border border-slate-300 rounded-lg px-2.5 py-1 text-slate-900 font-mono text-xs focus:ring-1 focus:ring-emerald-500 focus:bg-white"
                         />
                       </td>
                       <td className="py-2.5 px-3">
@@ -142,10 +142,10 @@ export function BaselineAttendanceModal({
                           onChange={(e) =>
                             handleChange(idx, "baselineAttended", parseInt(e.target.value) || 0)
                           }
-                          className="w-full bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1 text-white font-mono text-xs focus:ring-1 focus:ring-emerald-500"
+                          className="w-full bg-slate-50 border border-slate-300 rounded-lg px-2.5 py-1 text-slate-900 font-mono text-xs focus:ring-1 focus:ring-emerald-500 focus:bg-white"
                         />
                       </td>
-                      <td className="py-2.5 px-3 text-right font-mono font-semibold text-slate-300">
+                      <td className="py-2.5 px-3 text-right font-mono font-bold text-slate-700">
                         {pct}%
                       </td>
                     </tr>
@@ -155,18 +155,18 @@ export function BaselineAttendanceModal({
             </table>
           </div>
 
-          <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-800">
+          <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-100">
             <button
               type="button"
               onClick={onClose}
-              className="px-4 py-2 rounded-xl text-slate-300 hover:bg-slate-800 text-xs font-medium"
+              className="px-4 py-2 rounded-xl text-slate-600 hover:bg-slate-100 text-xs font-medium"
             >
               Cancel
             </button>
             <button
               type="submit"
               disabled={loading}
-              className="px-5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-medium shadow-lg shadow-emerald-600/30 flex items-center gap-2 text-xs transition disabled:opacity-50"
+              className="px-5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-semibold shadow-md shadow-emerald-600/20 flex items-center gap-2 text-xs transition disabled:opacity-50"
             >
               {loading ? (
                 <>
