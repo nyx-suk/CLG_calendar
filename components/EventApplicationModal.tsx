@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState } from "react";
-import { X, Calendar, Github, FileText, CheckCircle2, AlertCircle, Loader2 } from "lucide-react";
+import { X, Calendar, GitCommit, FileText, CheckCircle2, AlertCircle, Loader2 } from "lucide-react";
 import { fileEventApplication } from "@/app/actions";
 
 interface EventModalProps {
@@ -180,7 +180,7 @@ export function EventApplicationModal({
           {proofType === "GITHUB_REPO" && (
             <div className="p-3.5 rounded-xl bg-slate-950 border border-indigo-500/30 space-y-3">
               <div className="flex items-center gap-2 text-xs font-medium text-indigo-400">
-                <Github className="w-4 h-4" />
+                <GitCommit className="w-4 h-4" />
                 <span>Automated GitHub Commit Verification</span>
               </div>
               <div>

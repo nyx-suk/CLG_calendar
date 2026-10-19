@@ -14,7 +14,7 @@ import {
   ShieldAlert,
   Sparkles,
   ExternalLink,
-  Github,
+  GitCommit,
   Award,
   Layers,
   FileCheck,
@@ -849,7 +849,7 @@ export function StudentDashboard({
                     <div className="flex items-center gap-2">
                       {app.proofType === "GITHUB_REPO" && (
                         <div className="flex items-center gap-1.5 text-indigo-300 font-mono text-[11px] bg-slate-950 px-2 py-1 rounded border border-slate-800">
-                          <Github className="w-3.5 h-3.5" />
+                          <GitCommit className="w-3.5 h-3.5" />
                           <span>{app.githubCommitCount ?? 0} commits verified</span>
                         </div>
                       )}
