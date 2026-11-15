@@ -15,8 +15,10 @@ import {
   X,
   LogOut,
   LogIn,
+  Bell,
+  Check,
 } from "lucide-react";
-import { getUsersAndRoles } from "@/app/actions";
+import { getUsersAndRoles, getNotifications, markNotificationAsRead } from "@/app/actions";
 
 export function Navbar() {
   const pathname = usePathname();
@@ -29,6 +31,23 @@ export function Navbar() {
   const [users, setUsers] = useState<any[]>([]);
   const [currentUser, setCurrentUser] = useState<any | null>(null);
   const [mobileMenuOpen, setMobileMenuOpen] = useState<boolean>(false);
+  const [notifications, setNotifications] = useState<any[]>([]);
+  const [unreadCount, setUnreadCount] = useState<number>(0);
+  const [showNotifications, setShowNotifications] = useState<boolean>(false);
+
+  const loadNotifications = async () => {
+    try {
+      const res = await getNotifications();
+      setNotifications(res.notifications);
+      setUnreadCount(res.unreadCount);
+    } catch {
+      // Ignore
+    }
+  };
+
+  useEffect(() => {
+    loadNotifications();
+  }, [currentUser]);
 
   useEffect(() => {
     async function load() {
@@ -209,6 +228,69 @@ export function Navbar() {
                 )}
               </div>
             )}
+
+            {/* In-app Notification Bell */}
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setShowNotifications(!showNotifications)}
+                className="relative p-2 rounded-xl text-slate-600 hover:text-slate-900 hover:bg-slate-100 transition border border-slate-200"
+                title="Notifications"
+              >
+                <Bell className="w-4 h-4" />
+                {unreadCount > 0 && (
+                  <span className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-rose-500 text-white text-[10px] font-bold flex items-center justify-center animate-pulse">
+                    {unreadCount > 9 ? "9+" : unreadCount}
+                  </span>
+                )}
+              </button>
+
+              {showNotifications && (
+                <div className="absolute right-0 mt-2 w-80 sm:w-96 bg-white rounded-2xl shadow-2xl border border-slate-200 z-50 overflow-hidden animate-in fade-in slide-in-from-top-2">
+                  <div className="px-4 py-3 border-b border-slate-100 flex items-center justify-between bg-slate-50">
+                    <span className="text-xs font-bold text-slate-900">Notifications</span>
+                    <span className="text-[10px] font-medium text-slate-500">
+                      {unreadCount} unread
+                    </span>
+                  </div>
+                  <div className="max-h-72 overflow-y-auto divide-y divide-slate-100">
+                    {notifications.length === 0 ? (
+                      <div className="p-6 text-center text-xs text-slate-400">
+                        No notifications yet
+                      </div>
+                    ) : (
+                      notifications.map((n) => (
+                        <div
+                          key={n.id}
+                          onClick={async () => {
+                            if (!n.read) {
+                              await markNotificationAsRead(n.id);
+                              setNotifications((prev) =>
+                                prev.map((item) => (item.id === n.id ? { ...item, read: true } : item))
+                              );
+                              setUnreadCount((c) => Math.max(0, c - 1));
+                            }
+                            if (n.link) router.push(n.link);
+                            setShowNotifications(false);
+                          }}
+                          className={`p-3.5 hover:bg-slate-50 transition cursor-pointer text-xs ${
+                            !n.read ? "bg-indigo-50/40" : ""
+                          }`}
+                        >
+                          <div className="flex items-start justify-between gap-2">
+                            <span className="font-bold text-slate-900">{n.title}</span>
+                            <span className="text-[10px] text-slate-400 shrink-0">
+                              {new Date(n.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                            </span>
+                          </div>
+                          <p className="text-slate-600 text-[11px] mt-1">{n.message}</p>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
 
             {/* Mobile Hamburger */}
             <button

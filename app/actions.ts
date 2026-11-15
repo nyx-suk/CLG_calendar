@@ -15,6 +15,12 @@ import {
   requireRole,
   requireMentorOf,
 } from "@/lib/auth";
+import { getStorageProvider } from "@/lib/storage";
+import {
+  notifyApplicationFiled,
+  notifyApplicationReviewed,
+  notifyApplicationFlagged,
+} from "@/lib/notify";
 
 function safeRevalidatePath(path: string = "/") {
   try {
@@ -309,6 +315,7 @@ export async function fileEventApplication(data: {
   description?: string;
   proofType?: string;
   proofUrl?: string;
+  proofFileKey?: string;
   githubRepoUrl?: string;
   githubUsername?: string;
 }) {
@@ -330,24 +337,57 @@ export async function fileEventApplication(data: {
     githubSummary = ghResult.summaryText;
   }
 
-  const application = await prisma.eventApplication.create({
-    data: {
-      studentId,
-      title: data.title,
-      category: data.category,
-      startDate: new Date(data.startDate),
-      endDate: new Date(data.endDate),
-      description: data.description || null,
-      proofType: data.proofType || null,
-      proofUrl: data.proofUrl || null,
-      githubRepoUrl: data.githubRepoUrl || null,
-      githubUsername: data.githubUsername || null,
-      githubCommitCount,
-      githubSummary,
-      status: "PENDING_APPROVAL",
-      proofVerified: false,
-    },
+  // Amendment 3: Atomic transaction verifying and attaching proofFileKey
+  const application = await prisma.$transaction(async (tx) => {
+    let attachedUpload: any = null;
+
+    if (data.proofFileKey) {
+      const upload = await tx.upload.findUnique({
+        where: { key: data.proofFileKey },
+      });
+
+      if (!upload || upload.uploaderId !== caller.id || upload.status !== "UNATTACHED") {
+        const error: any = new Error(
+          "Invalid proof upload: File does not belong to you or has already been attached."
+        );
+        error.status = 400;
+        throw error;
+      }
+
+      await tx.upload.update({
+        where: { id: upload.id },
+        data: { status: "ATTACHED" },
+      });
+
+      attachedUpload = upload;
+    }
+
+    return tx.eventApplication.create({
+      data: {
+        studentId,
+        title: data.title,
+        category: data.category,
+        startDate: new Date(data.startDate),
+        endDate: new Date(data.endDate),
+        description: data.description || null,
+        proofType: data.proofType || null,
+        proofUrl: data.proofUrl || null,
+        proofFileKey: attachedUpload?.key || null,
+        proofMimeType: attachedUpload?.detectedMime || null,
+        proofSizeBytes: attachedUpload?.size || null,
+        proofOriginalName: attachedUpload?.sanitizedFileName || null,
+        githubRepoUrl: data.githubRepoUrl || null,
+        githubUsername: data.githubUsername || null,
+        githubCommitCount,
+        githubSummary,
+        status: "PENDING_APPROVAL",
+        proofVerified: false,
+      },
+    });
   });
+
+  // Amendment 5: In-app notifications written after main transaction commits
+  await notifyApplicationFiled(application.id);
 
   safeRevalidatePath("/");
   return { success: true, application };
@@ -539,6 +579,9 @@ export async function reviewApplication(params: {
     }
   }
 
+  // Trigger non-sensitive notification to applicant student
+  await notifyApplicationReviewed(applicationId, action);
+
   safeRevalidatePath("/");
   return { success: true };
 }
@@ -682,6 +725,9 @@ export async function flagApplicationByCoordinator(params: {
     },
   });
 
+  // Trigger non-sensitive notifications to student and mentor
+  await notifyApplicationFlagged(params.applicationId);
+
   safeRevalidatePath("/");
   return { success: true };
 }
@@ -758,3 +804,91 @@ export async function provisionUser(data: {
   safeRevalidatePath("/");
   return { success: true, user: newUser };
 }
+
+// 12. Get Signed Proof Download URL (strictly barring lecturers)
+export async function getSignedProofUrl(applicationId: string) {
+  const caller = await requireUser();
+
+  const app = await prisma.eventApplication.findUnique({
+    where: { id: applicationId },
+    include: { student: true },
+  });
+
+  if (!app || !app.proofFileKey) {
+    const error: any = new Error("Not Found: Proof document not found");
+    error.status = 404;
+    throw error;
+  }
+
+  // Access control:
+  // - Applicant student: ALLOWED
+  // - Assigned mentor: ALLOWED
+  // - Coordinator: ALLOWED
+  // - LECTURERS: STRICTLY BARRED (returns 404)
+  const isApplicant = app.studentId === caller.id;
+  const isAssignedMentor = caller.role === "MENTOR" && app.student.mentorId === caller.id;
+  const isCoordinator = caller.role === "COORDINATOR";
+
+  if (!isApplicant && !isAssignedMentor && !isCoordinator) {
+    const error: any = new Error("Not Found: Proof document not found");
+    error.status = 404;
+    throw error;
+  }
+
+  const storage = getStorageProvider();
+  const signedUrl = await storage.getSignedDownloadUrl(app.proofFileKey, 900); // 15 mins validity
+  return { signedUrl };
+}
+
+// 13. Fetch Notifications for the active user
+export async function getNotifications() {
+  const caller = await requireUser();
+
+  const notifications = await prisma.notification.findMany({
+    where: { userId: caller.id },
+    orderBy: { createdAt: "desc" },
+    take: 20,
+  });
+
+  const unreadCount = await prisma.notification.count({
+    where: { userId: caller.id, read: false },
+  });
+
+  return { notifications, unreadCount };
+}
+
+// 14. Mark Notification as Read (ownership verified)
+export async function markNotificationAsRead(notificationId: string) {
+  const caller = await requireUser();
+
+  const notif = await prisma.notification.findUnique({
+    where: { id: notificationId },
+  });
+
+  if (!notif || notif.userId !== caller.id) {
+    const error: any = new Error("Not Found: Notification not found");
+    error.status = 404;
+    throw error;
+  }
+
+  await prisma.notification.update({
+    where: { id: notificationId },
+    data: { read: true },
+  });
+
+  return { success: true };
+}
+
+// 15. Toggle User Email Notification Setting
+export async function toggleEmailNotifications(enabled: boolean) {
+  const caller = await requireUser();
+
+  await prisma.user.update({
+    where: { id: caller.id },
+    data: { emailNotificationsEnabled: enabled },
+  });
+
+  safeRevalidatePath("/");
+  return { success: true, emailNotificationsEnabled: enabled };
+}
+

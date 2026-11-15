@@ -13,7 +13,7 @@ import {
   Loader2,
   Users,
 } from "lucide-react";
-import { reviewApplication } from "@/app/actions";
+import { reviewApplication, getSignedProofUrl } from "@/app/actions";
 
 interface MentorDashboardProps {
   data: {
@@ -209,6 +209,32 @@ export function MentorDashboard({ data, onRefresh }: MentorDashboardProps) {
                             {app.githubSummary || "Automated check verified commits during event dates."}
                           </p>
                         </div>
+                      </div>
+                    )}
+
+                    {app.proofFileKey && (
+                      <div className="flex items-center justify-between text-xs p-2.5 rounded-lg bg-emerald-50 border border-emerald-200">
+                        <div className="flex items-center gap-2 text-emerald-900 font-medium">
+                          <FileText className="w-4 h-4 text-emerald-600 shrink-0" />
+                          <span className="truncate">
+                            {app.proofOriginalName || "Attached Proof Document"} ({((app.proofSizeBytes || 0) / 1024).toFixed(1)} KB)
+                          </span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            try {
+                              const res = await getSignedProofUrl(app.id);
+                              window.open(res.signedUrl, "_blank");
+                            } catch (e: any) {
+                              alert(`Could not open proof: ${e.message}`);
+                            }
+                          }}
+                          className="text-xs text-indigo-700 hover:text-indigo-900 font-bold flex items-center gap-1 bg-white px-2.5 py-1 rounded-md border border-indigo-200 hover:bg-indigo-50 shrink-0 ml-2 cursor-pointer"
+                        >
+                          <span>Inspect Proof</span>
+                          <ExternalLink className="w-3 h-3" />
+                        </button>
                       </div>
                     )}
 

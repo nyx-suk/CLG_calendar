@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "verify": "tsc --noEmit && eslint && tsx tests/verify-core.ts && tsx tests/auth-security.test.ts"
+    "verify": "tsc --noEmit && eslint && tsx tests/verify-core.ts && tsx tests/auth-security.test.ts && tsx tests/phase2-security.test.ts"
   },
   "dependencies": {
     "@auth/prisma-adapter": "2.11.3",

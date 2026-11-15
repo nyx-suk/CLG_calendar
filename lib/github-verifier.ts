@@ -1,15 +1,22 @@
+export interface CommitSummary {
+  sha: string;
+  message: string;
+  authorName: string;
+  authorLogin?: string;
+  authorDate: string;
+  committerDate?: string;
+  driftHours?: number;
+  advisoryFlags: string[];
+}
+
 export interface GitHubVerificationResult {
   verified: boolean;
   repo: string;
   authorMatched: boolean;
   commitCount: number;
-  commitSummaries: {
-    sha: string;
-    message: string;
-    authorName: string;
-    date: string;
-  }[];
+  commitSummaries: CommitSummary[];
   summaryText: string;
+  advisoryFlagsCount: number;
   error?: string | null;
 }
 
@@ -31,7 +38,12 @@ export function parseGitHubRepoUrl(url: string): { owner: string; repo: string }
 }
 
 /**
- * Verify commits in a GitHub repository between start and end dates
+ * Verify commits in a GitHub repository between start and end dates.
+ * Hardened with:
+ * - Committer date & author date drift inspection
+ * - GitHub Web-flow & squash commit recognition
+ * - Author matching priority: login > noreply email > display name
+ * - Advisory-only flags (never auto-reject)
  */
 export async function verifyGitHubProjectCommits(params: {
   repoUrl: string;
@@ -48,6 +60,7 @@ export async function verifyGitHubProjectCommits(params: {
       commitCount: 0,
       commitSummaries: [],
       summaryText: "Invalid GitHub repository URL format. Use https://github.com/owner/repository",
+      advisoryFlagsCount: 0,
       error: "Invalid URL",
     };
   }
@@ -56,10 +69,9 @@ export async function verifyGitHubProjectCommits(params: {
   const since = new Date(params.startDate).toISOString();
   const until = new Date(params.endDate).toISOString();
 
-  let apiUrl = `https://api.github.com/repos/${owner}/${repo}/commits?since=${since}&until=${until}&per_page=30`;
-  if (params.username && params.username.trim().length > 0) {
-    apiUrl += `&author=${encodeURIComponent(params.username.trim())}`;
-  }
+  // We query all commits in window rather than filtering strictly by author API param,
+  // allowing us to perform robust matching and surface contributor context.
+  const apiUrl = `https://api.github.com/repos/${owner}/${repo}/commits?since=${since}&until=${until}&per_page=30`;
 
   try {
     const headers: Record<string, string> = {
@@ -84,6 +96,7 @@ export async function verifyGitHubProjectCommits(params: {
           commitCount: 0,
           commitSummaries: [],
           summaryText: `Repository ${owner}/${repo} was not found or is private.`,
+          advisoryFlagsCount: 0,
           error: "Not Found",
         };
       }
@@ -95,6 +108,7 @@ export async function verifyGitHubProjectCommits(params: {
           commitCount: 1,
           commitSummaries: [],
           summaryText: `GitHub API rate limit reached. Manual inspection recommended for repository: ${owner}/${repo}`,
+          advisoryFlagsCount: 0,
           error: "Rate Limited",
         };
       }
@@ -110,24 +124,105 @@ export async function verifyGitHubProjectCommits(params: {
         commitCount: 0,
         commitSummaries: [],
         summaryText: "Unexpected response format from GitHub API.",
+        advisoryFlagsCount: 0,
         error: "Malformed response",
       };
     }
 
-    const commitSummaries = data.slice(0, 10).map((c: any) => ({
-      sha: c.sha ? c.sha.substring(0, 7) : "",
-      message: c.commit?.message ? c.commit.message.split("\n")[0] : "",
-      authorName: c.commit?.author?.name || c.author?.login || "Unknown",
-      date: c.commit?.author?.date || "",
-    }));
+    const studentUsername = params.username?.toLowerCase().trim() || "";
+    let matchedAuthorCount = 0;
+    let totalAdvisoryFlags = 0;
+
+    const commitSummaries: CommitSummary[] = data.slice(0, 15).map((c: any) => {
+      const advisoryFlags: string[] = [];
+
+      const authorName = c.commit?.author?.name || "Unknown";
+      const authorLogin = c.author?.login || "";
+      const authorEmail = (c.commit?.author?.email || "").toLowerCase();
+      const committerLogin = c.committer?.login || "";
+
+      const authorDateStr = c.commit?.author?.date;
+      const committerDateStr = c.commit?.committer?.date;
+
+      let driftHours = 0;
+
+      // 1. Check timestamp drift between author and committer dates
+      if (authorDateStr && committerDateStr) {
+        const authorTime = new Date(authorDateStr).getTime();
+        const committerTime = new Date(committerDateStr).getTime();
+        const driftMs = Math.abs(committerTime - authorTime);
+        driftHours = Math.round(driftMs / (1000 * 60 * 60));
+
+        if (driftHours > 24) {
+          // Account for GitHub web-flow merges or squashes
+          if (committerLogin === "web-flow" || c.commit?.committer?.name === "GitHub") {
+            advisoryFlags.push(
+              `Advisory: Squash / Web-UI commit via GitHub web-flow (${driftHours}h drift from author date)`
+            );
+          } else {
+            advisoryFlags.push(
+              `Advisory: Timestamp drift of ${driftHours}h between author and committer (possible rebase or date modification)`
+            );
+          }
+        }
+      }
+
+      // 2. Author matching: GitHub login > noreply email > display name
+      let isAuthorMatch = false;
+      if (studentUsername) {
+        if (authorLogin && authorLogin.toLowerCase() === studentUsername) {
+          isAuthorMatch = true;
+        } else if (
+          authorEmail.includes(`${studentUsername}@users.noreply.github.com`) ||
+          authorEmail.startsWith(`${studentUsername}+`)
+        ) {
+          isAuthorMatch = true;
+        } else if (committerLogin && committerLogin.toLowerCase() === studentUsername) {
+          isAuthorMatch = true;
+        } else if (authorName.toLowerCase() === studentUsername) {
+          isAuthorMatch = true;
+        }
+
+        if (isAuthorMatch) {
+          matchedAuthorCount++;
+        } else {
+          advisoryFlags.push(
+            `Advisory: Author @${authorLogin || authorName} does not match student username @${studentUsername}`
+          );
+        }
+      }
+
+      totalAdvisoryFlags += advisoryFlags.length;
+
+      return {
+        sha: c.sha ? c.sha.substring(0, 7) : "",
+        message: c.commit?.message ? c.commit.message.split("\n")[0] : "",
+        authorName,
+        authorLogin: authorLogin || undefined,
+        authorDate: authorDateStr || "",
+        committerDate: committerDateStr || undefined,
+        driftHours,
+        advisoryFlags,
+      };
+    });
 
     const commitCount = data.length;
-    const authorMatched = params.username ? commitCount > 0 : true;
+    // Flags are advisory only: verified is true if commits exist in window
     const verified = commitCount > 0;
+    const authorMatched = studentUsername ? matchedAuthorCount > 0 : true;
 
-    const summaryText = verified
-      ? `Successfully verified ${commitCount} commit(s) by ${params.username || "contributors"} between ${since.split("T")[0]} and ${until.split("T")[0]}.`
-      : `No commits found for ${params.username ? `@${params.username}` : "this repository"} in the date window ${since.split("T")[0]} to ${until.split("T")[0]}.`;
+    let summaryText = "";
+    if (!verified) {
+      summaryText = `No commits found for repository between ${since.split("T")[0]} and ${until.split("T")[0]}.`;
+    } else {
+      summaryText = `Found ${commitCount} commit(s) during event dates.`;
+      if (studentUsername) {
+        summaryText += ` ${matchedAuthorCount}/${commitCount} commit(s) matched student username @${studentUsername}.`;
+      }
+      if (totalAdvisoryFlags > 0) {
+        summaryText += ` Note: ${totalAdvisoryFlags} advisory flag(s) detected for mentor inspection.`;
+      }
+    }
 
     return {
       verified,
@@ -136,6 +231,7 @@ export async function verifyGitHubProjectCommits(params: {
       commitCount,
       commitSummaries,
       summaryText,
+      advisoryFlagsCount: totalAdvisoryFlags,
     };
   } catch (err: any) {
     return {
@@ -145,6 +241,7 @@ export async function verifyGitHubProjectCommits(params: {
       commitCount: 0,
       commitSummaries: [],
       summaryText: `Could not verify commits automatically: ${err.message}. Mentor can inspect manually.`,
+      advisoryFlagsCount: 0,
       error: err.message,
     };
   }

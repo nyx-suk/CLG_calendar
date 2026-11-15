@@ -21,6 +21,7 @@ model User {
   rollNumber     String?
   githubUsername String?
   mentorId       String?
+  emailNotificationsEnabled Boolean @default(true)
   mentor         User?              @relation("MentorMentees", fields: [mentorId], references: [id])
   mentees        User[]             @relation("MentorMentees")
   subjectsTaught Subject[]          @relation("LecturerSubjects")
@@ -32,6 +33,9 @@ model User {
   baselineAuditsStudent BaselineAuditLog[] @relation("StudentBaselineAudits")
   accounts       Account[]
   sessions       Session[]
+  notifications  Notification[]
+  uploads        Upload[]
+  fileDownloads  FileDownloadLog[]
   createdAt      DateTime           @default(now())
   updatedAt      DateTime           @updatedAt
 }
@@ -127,6 +131,10 @@ model EventApplication {
   status              String   @default("PENDING_APPROVAL") // "PENDING_APPROVAL", "APPROVED", "REJECTED", "FLAGGED_BY_COORDINATOR"
   proofType           String?  // "GITHUB_REPO", "CERTIFICATE", "MEDICAL_SLIP", "TICKET", "OTHER"
   proofUrl            String?
+  proofFileKey        String?
+  proofMimeType       String?
+  proofSizeBytes      Int?
+  proofOriginalName   String?
   githubRepoUrl       String?
   githubUsername      String?
   githubCommitCount   Int?
@@ -138,8 +146,48 @@ model EventApplication {
   reviewedBy          User?    @relation("ReviewedApplications", fields: [reviewedById], references: [id])
   student             User     @relation(fields: [studentId], references: [id], onDelete: Cascade)
   attendanceRecords   ClassAttendanceRecord[]
+  fileDownloads       FileDownloadLog[]
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
+}
+
+model Upload {
+  id                String   @id @default(cuid())
+  key               String   @unique
+  uploaderId        String
+  size              Int
+  detectedMime      String
+  sanitizedFileName String
+  status            String   @default("UNATTACHED") // "UNATTACHED", "ATTACHED"
+  createdAt         DateTime @default(now())
+
+  uploader User @relation(fields: [uploaderId], references: [id], onDelete: Cascade)
+}
+
+model Notification {
+  id        String   @id @default(cuid())
+  userId    String
+  title     String
+  message   String
+  type      String   // "APPLICATION_FILED", "APPLICATION_APPROVED", "APPLICATION_REJECTED", "APPLICATION_FLAGGED"
+  read      Boolean  @default(false)
+  link      String?
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, read, createdAt])
+}
+
+model FileDownloadLog {
+  id            String   @id @default(cuid())
+  userId        String
+  applicationId String
+  fileKey       String
+  downloadedAt  DateTime @default(now())
+
+  user        User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  application EventApplication @relation(fields: [applicationId], references: [id], onDelete: Cascade)
 }
 
 model ClassAttendanceRecord {
