@@ -6,6 +6,7 @@ import {
   AttendanceStats,
 } from "@/lib/attendance-calculator";
 import { resolveStudentDaySchedule } from "@/lib/calendar-generator";
+import { requireOwnsStudentData } from "@/lib/auth";
 
 export async function GET(
   req: NextRequest,
@@ -13,6 +14,10 @@ export async function GET(
 ) {
   try {
     const { id } = await context.params;
+
+    // Server-side authorization & IDOR defense: returns 404 if caller has no relationship
+    await requireOwnsStudentData(id);
+
     const url = new URL(req.url);
     const dateStr = url.searchParams.get("date") || "2026-10-19";
 
@@ -29,7 +34,7 @@ export async function GET(
       },
     });
 
-    if (!student || student.role !== "STUDENT") {
+    if (!student || student.role !== "STUDENT" || !student.active) {
       return NextResponse.json({ error: "Student not found" }, { status: 404 });
     }
 
@@ -44,7 +49,7 @@ export async function GET(
       where: { studentId: id },
     });
 
-    // 3. Compute stats for each subject
+    // 3. Compute stats for each subject (Rule 1)
     const subjectStats: AttendanceStats[] = subjects.map((sub) => {
       const baseline = student.baselines.find((b) => b.subjectId === sub.id);
       const baselineConducted = baseline?.baselineConducted ?? 0;
@@ -83,7 +88,7 @@ export async function GET(
     const { tier: overallTier, description: overallTierDescription } =
       categorizeTier(overallODPercentage);
 
-    // 4. Resolve calendar schedule for the requested date
+    // 4. Resolve calendar schedule (Rule 2)
     const daySchedule = await resolveStudentDaySchedule({
       studentId: id,
       section: student.section || "5A",
@@ -96,7 +101,7 @@ export async function GET(
       orderBy: { startDate: "asc" },
     });
 
-    // 6. Fetch COE calendar events for general awareness
+    // 6. Fetch COE calendar events
     const coeEvents = await prisma.cOEEvent.findMany({
       orderBy: { date: "asc" },
     });
@@ -126,7 +131,7 @@ export async function GET(
       coeEvents,
     });
   } catch (error: any) {
-    console.error("Dashboard error:", error);
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    const status = error.status || 500;
+    return NextResponse.json({ error: error.message }, { status });
   }
 }

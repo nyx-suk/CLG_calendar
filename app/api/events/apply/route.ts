@@ -1,12 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { verifyGitHubProjectCommits } from "@/lib/github-verifier";
+import { requireRole } from "@/lib/auth";
 
 export async function POST(req: NextRequest) {
   try {
+    const caller = await requireRole(["STUDENT"]);
     const body = await req.json();
     const {
-      studentId,
       title,
       category,
       startDate,
@@ -18,12 +19,15 @@ export async function POST(req: NextRequest) {
       githubUsername,
     } = body;
 
-    if (!studentId || !title || !category || !startDate || !endDate) {
+    if (!title || !category || !startDate || !endDate) {
       return NextResponse.json(
-        { error: "Missing required fields (studentId, title, category, startDate, endDate)" },
+        { error: "Missing required fields (title, category, startDate, endDate)" },
         { status: 400 }
       );
     }
+
+    // Server derives identity strictly from authenticated session
+    const studentId = caller.id;
 
     let githubCommitCount: number | null = null;
     let githubSummary: string | null = null;
@@ -66,7 +70,7 @@ export async function POST(req: NextRequest) {
       message: "Event application filed successfully and forwarded to mentor for approval.",
     });
   } catch (error: any) {
-    console.error("Apply error:", error);
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    const status = error.status || 500;
+    return NextResponse.json({ error: error.message }, { status });
   }
 }

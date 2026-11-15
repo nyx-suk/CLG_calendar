@@ -10,10 +10,31 @@ import {
 import { resolveStudentDaySchedule } from "@/lib/calendar-generator";
 import { verifyGitHubProjectCommits } from "@/lib/github-verifier";
 import { revalidatePath } from "next/cache";
+import {
+  requireUser,
+  requireRole,
+  requireMentorOf,
+} from "@/lib/auth";
 
-// 1. Get all demo users for role switching
+function safeRevalidatePath(path: string = "/") {
+  try {
+    revalidatePath(path);
+  } catch {
+    // In non-request environments (e.g. unit test runner), ignore static generation store error
+  }
+}
+
+// 1. Get users for role switching (restricted to dev demo mode or coordinator)
 export async function getUsersAndRoles() {
+  const isDemo = process.env.NODE_ENV !== "production" && process.env.DEMO_MODE === "true";
+
+  if (!isDemo) {
+    // In production, only coordinators can list all institutional users
+    await requireRole(["COORDINATOR"]);
+  }
+
   const users = await prisma.user.findMany({
+    where: { active: true },
     include: {
       mentor: true,
       subjectsTaught: true,
@@ -25,10 +46,49 @@ export async function getUsersAndRoles() {
   return users;
 }
 
-// 2. Fetch full student dashboard data
-export async function getStudentDashboard(studentId: string, dateStr: string = "2026-10-19") {
+// 2. Fetch student dashboard data (server-side authorization and ownership)
+export async function getStudentDashboard(studentId?: string, dateStr: string = "2026-10-19") {
+  const caller = await requireUser();
+  let targetStudentId = caller.id;
+
+  if (caller.role === "STUDENT") {
+    // Students can only view their own dashboard
+    if (studentId && studentId !== caller.id) {
+      const error: any = new Error("Not Found: Student not found");
+      error.status = 404;
+      throw error;
+    }
+    targetStudentId = caller.id;
+  } else if (caller.role === "MENTOR") {
+    if (!studentId) {
+      const error: any = new Error("Not Found: Student not found");
+      error.status = 404;
+      throw error;
+    }
+    await requireMentorOf(studentId);
+    targetStudentId = studentId;
+  } else if (caller.role === "COORDINATOR") {
+    if (!studentId) {
+      targetStudentId = caller.id;
+    } else {
+      const student = await prisma.user.findFirst({
+        where: { id: studentId, role: "STUDENT" },
+      });
+      if (!student) {
+        const error: any = new Error("Not Found: Student not found");
+        error.status = 404;
+        throw error;
+      }
+      targetStudentId = studentId;
+    }
+  } else {
+    const error: any = new Error("Not Found: Student not found");
+    error.status = 404;
+    throw error;
+  }
+
   const student = await prisma.user.findUnique({
-    where: { id: studentId },
+    where: { id: targetStudentId },
     include: {
       mentor: true,
       baselines: {
@@ -40,7 +100,11 @@ export async function getStudentDashboard(studentId: string, dateStr: string = "
     },
   });
 
-  if (!student) throw new Error("Student not found");
+  if (!student) {
+    const error: any = new Error("Not Found: Student not found");
+    error.status = 404;
+    throw error;
+  }
 
   const subjects = await prisma.subject.findMany({
     include: { lecturer: true },
@@ -48,7 +112,7 @@ export async function getStudentDashboard(studentId: string, dateStr: string = "
   });
 
   const attendanceRecords = await prisma.classAttendanceRecord.findMany({
-    where: { studentId },
+    where: { studentId: targetStudentId },
   });
 
   const subjectStats: AttendanceStats[] = subjects.map((sub) => {
@@ -89,7 +153,7 @@ export async function getStudentDashboard(studentId: string, dateStr: string = "
     categorizeTier(overallODPercentage);
 
   const daySchedule = await resolveStudentDaySchedule({
-    studentId,
+    studentId: targetStudentId,
     section: student.section || "5A",
     dateStr,
   });
@@ -129,13 +193,74 @@ export async function getStudentDashboard(studentId: string, dateStr: string = "
   };
 }
 
-// 3. Update Mid-Semester Baseline Attendance
+// 3. Update Mid-Semester Baseline Attendance (with strict onboarding & coordinator audit log)
 export async function updateBaselines(
   studentId: string,
   baselines: { subjectId: string; baselineConducted: number; baselineAttended: number }[]
 ) {
+  const caller = await requireUser();
+
+  if (caller.role === "STUDENT") {
+    // IDOR protection: Student can only modify their own baselines
+    if (caller.id !== studentId) {
+      const error: any = new Error("Not Found: Student not found");
+      error.status = 404;
+      throw error;
+    }
+
+    // Amendment 4: Students may set them ONLY if no baseline row exists for that subject (onboarding)
+    for (const b of baselines) {
+      const existing = await prisma.attendanceBaseline.findUnique({
+        where: {
+          studentId_subjectId: {
+            studentId,
+            subjectId: b.subjectId,
+          },
+        },
+      });
+
+      if (existing) {
+        const error: any = new Error(
+          "Forbidden: Attendance baselines have already been established for this subject. Only institutional coordinators can modify established baselines."
+        );
+        error.status = 403;
+        throw error;
+      }
+    }
+  } else if (caller.role === "COORDINATOR") {
+    // Coordinators can modify any student's baseline
+    const student = await prisma.user.findFirst({
+      where: { id: studentId, role: "STUDENT" },
+    });
+    if (!student) {
+      const error: any = new Error("Not Found: Student not found");
+      error.status = 404;
+      throw error;
+    }
+  } else {
+    // Mentors and Lecturers cannot modify baselines
+    const error: any = new Error("Forbidden: Mentors and lecturers are not permitted to modify attendance baselines.");
+    error.status = 403;
+    throw error;
+  }
+
+  // Non-negotiable Rule 4: AttendanceBaseline writes use upsert on studentId_subjectId
   for (const b of baselines) {
-    await prisma.attendanceBaseline.upsert({
+    const existing = await prisma.attendanceBaseline.findUnique({
+      where: {
+        studentId_subjectId: {
+          studentId,
+          subjectId: b.subjectId,
+        },
+      },
+    });
+
+    const oldConducted = existing?.baselineConducted ?? 0;
+    const oldAttended = existing?.baselineAttended ?? 0;
+    const newConducted = Number(b.baselineConducted) || 0;
+    const newAttended = Number(b.baselineAttended) || 0;
+
+    const baselineRecord = await prisma.attendanceBaseline.upsert({
       where: {
         studentId_subjectId: {
           studentId,
@@ -143,25 +268,40 @@ export async function updateBaselines(
         },
       },
       update: {
-        baselineConducted: Number(b.baselineConducted) || 0,
-        baselineAttended: Number(b.baselineAttended) || 0,
+        baselineConducted: newConducted,
+        baselineAttended: newAttended,
         asOfDate: new Date(),
       },
       create: {
         studentId,
         subjectId: b.subjectId,
-        baselineConducted: Number(b.baselineConducted) || 0,
-        baselineAttended: Number(b.baselineAttended) || 0,
+        baselineConducted: newConducted,
+        baselineAttended: newAttended,
+      },
+    });
+
+    // Amendment 4: Write audit entry for every change
+    await prisma.baselineAuditLog.create({
+      data: {
+        baselineId: baselineRecord.id,
+        studentId,
+        subjectId: b.subjectId,
+        changedById: caller.id,
+        oldConducted,
+        oldAttended,
+        newConducted,
+        newAttended,
       },
     });
   }
-  revalidatePath("/");
+
+  safeRevalidatePath("/");
   return { success: true };
 }
 
-// 4. File an Event Application (with optional GitHub commit inspection)
+// 4. File an Event Application (server-derived student identity)
 export async function fileEventApplication(data: {
-  studentId: string;
+  studentId?: string;
   title: string;
   category: string;
   startDate: string;
@@ -172,6 +312,10 @@ export async function fileEventApplication(data: {
   githubRepoUrl?: string;
   githubUsername?: string;
 }) {
+  const caller = await requireRole(["STUDENT"]);
+  // Derive studentId strictly from session; do not trust client parameter
+  const studentId = caller.id;
+
   let githubCommitCount: number | null = null;
   let githubSummary: string | null = null;
 
@@ -188,7 +332,7 @@ export async function fileEventApplication(data: {
 
   const application = await prisma.eventApplication.create({
     data: {
-      studentId: data.studentId,
+      studentId,
       title: data.title,
       category: data.category,
       startDate: new Date(data.startDate),
@@ -205,7 +349,7 @@ export async function fileEventApplication(data: {
     },
   });
 
-  revalidatePath("/");
+  safeRevalidatePath("/");
   return { success: true, application };
 }
 
@@ -215,18 +359,29 @@ export async function simulateEvent(params: {
   missedClasses: number;
   isCoveredByOD: boolean;
 }) {
+  await requireUser();
   return simulateMissImpact(params.currentStats, params.missedClasses, params.isCoveredByOD);
 }
 
 // 6. Mentor: Fetch applications and mentee health
-export async function getMentorDashboard(mentorId: string) {
+export async function getMentorDashboard(mentorId?: string) {
+  const caller = await requireRole(["MENTOR", "COORDINATOR"]);
+  // If caller is mentor, strictly use caller.id
+  const targetMentorId = caller.role === "MENTOR" ? caller.id : (mentorId || caller.id);
+
   const mentor = await prisma.user.findUnique({
-    where: { id: mentorId },
+    where: { id: targetMentorId },
   });
+
+  if (!mentor || mentor.role !== "MENTOR") {
+    const error: any = new Error("Not Found: Mentor not found");
+    error.status = 404;
+    throw error;
+  }
 
   const applications = await prisma.eventApplication.findMany({
     where: {
-      student: { mentorId },
+      student: { mentorId: targetMentorId },
     },
     include: {
       student: true,
@@ -237,14 +392,13 @@ export async function getMentorDashboard(mentorId: string) {
   });
 
   const mentees = await prisma.user.findMany({
-    where: { mentorId },
+    where: { mentorId: targetMentorId, role: "STUDENT" },
     include: {
       baselines: { include: { subject: true } },
       applications: true,
     },
   });
 
-  // Calculate mentee health summaries
   const menteeSummaries = await Promise.all(
     mentees.map(async (m) => {
       const records = await prisma.classAttendanceRecord.findMany({
@@ -289,7 +443,7 @@ export async function getMentorDashboard(mentorId: string) {
   };
 }
 
-// 7. Mentor: Review Application (Approve / Reject / Validate Proof & Credit OD)
+// 7. Mentor / Coordinator: Review Application (Approve / Reject / Validate Proof & Credit OD)
 export async function reviewApplication(params: {
   applicationId: string;
   action: "APPROVE" | "REJECT";
@@ -297,38 +451,51 @@ export async function reviewApplication(params: {
   markProofVerified?: boolean;
 }) {
   const { applicationId, action, remarks, markProofVerified } = params;
+  const caller = await requireRole(["MENTOR", "COORDINATOR"]);
 
   const app = await prisma.eventApplication.findUnique({
     where: { id: applicationId },
     include: { student: true },
   });
 
-  if (!app) throw new Error("Application not found");
+  if (!app) {
+    const error: any = new Error("Not Found: Application not found");
+    error.status = 404;
+    throw error;
+  }
+
+  // Amendment 8: Return 404 when caller has no relationship to resource
+  if (caller.role === "MENTOR" && app.student.mentorId !== caller.id) {
+    const error: any = new Error("Not Found: Application not found");
+    error.status = 404;
+    throw error;
+  }
 
   const newStatus = action === "APPROVE" ? "APPROVED" : "REJECTED";
 
+  // Amendment 7: Set reviewedById on EventApplication
   await prisma.eventApplication.update({
     where: { id: applicationId },
     data: {
       status: newStatus,
       mentorRemarks: remarks || (action === "APPROVE" ? "Approved by mentor." : "Rejected by mentor."),
-      proofVerified: markProofVerified ?? (action === "APPROVE" && !!app.proofUrl || !!app.githubRepoUrl),
+      proofVerified: markProofVerified ?? (action === "APPROVE" && (!!app.proofUrl || !!app.githubRepoUrl)),
+      reviewedById: caller.id,
     },
   });
 
   // If approved, create/credit ON_DUTY records for matching slots during event duration
+  // Non-negotiable Rule 4: ClassAttendanceRecord writes use upsert on studentId_subjectId_date_slotStartTime
   if (action === "APPROVE") {
     const startDate = new Date(app.startDate);
     const endDate = new Date(app.endDate);
 
-    // Loop through each date of the event
     const curDate = new Date(startDate);
     while (curDate <= endDate) {
       const dateStr = curDate.toISOString().split("T")[0];
       const jsDay = curDate.getUTCDay();
       const baseDayOfWeek = jsDay === 0 ? 7 : jsDay;
 
-      // Check for COE swap
       const coeEvent = await prisma.cOEEvent.findFirst({ where: { date: dateStr } });
       let effectiveDay = baseDayOfWeek;
       if (coeEvent && coeEvent.type === "TIMETABLE_SWAP" && coeEvent.swapDayOfWeek) {
@@ -336,7 +503,6 @@ export async function reviewApplication(params: {
       }
 
       if (effectiveDay !== 7 && (!coeEvent || coeEvent.type !== "HOLIDAY")) {
-        // Fetch timetable slots for this section and day
         const slots = await prisma.timetableSlot.findMany({
           where: {
             section: app.student.section || "5A",
@@ -373,20 +539,28 @@ export async function reviewApplication(params: {
     }
   }
 
-  revalidatePath("/");
+  safeRevalidatePath("/");
   return { success: true };
 }
 
-// 8. Lecturer: Transparency view to avoid prejudice
-export async function getLecturerRoster(lecturerId: string, dateStr: string = "2026-10-19") {
+// 8. Lecturer: Transparency view to avoid prejudice (restricted strictly to subjects taught)
+export async function getLecturerRoster(lecturerId?: string, dateStr: string = "2026-10-19") {
+  const caller = await requireRole(["LECTURER", "COORDINATOR"]);
+  // If caller is lecturer, strictly enforce caller.id
+  const targetLecturerId = caller.role === "LECTURER" ? caller.id : (lecturerId || caller.id);
+
   const lecturer = await prisma.user.findUnique({
-    where: { id: lecturerId },
+    where: { id: targetLecturerId },
     include: {
       subjectsTaught: true,
     },
   });
 
-  if (!lecturer) throw new Error("Lecturer not found");
+  if (!lecturer || lecturer.role !== "LECTURER") {
+    const error: any = new Error("Not Found: Lecturer not found");
+    error.status = 404;
+    throw error;
+  }
 
   const subjectIds = lecturer.subjectsTaught.map((s) => s.id);
 
@@ -461,17 +635,16 @@ export async function getLecturerRoster(lecturerId: string, dateStr: string = "2
   };
 }
 
-// 9. Coordinator: Audit console
+// 9. Coordinator: Institutional Audit Console
 export async function getCoordinatorAudit() {
-  const coordinator = await prisma.user.findFirst({
-    where: { role: "COORDINATOR" },
-  });
+  const caller = await requireRole(["COORDINATOR"]);
 
   const applications = await prisma.eventApplication.findMany({
     include: {
       student: {
         include: { mentor: true },
       },
+      reviewedBy: true,
     },
     orderBy: {
       updatedAt: "desc",
@@ -479,7 +652,7 @@ export async function getCoordinatorAudit() {
   });
 
   return {
-    coordinator,
+    coordinator: caller,
     applications,
   };
 }
@@ -489,6 +662,18 @@ export async function flagApplicationByCoordinator(params: {
   applicationId: string;
   flagNotes: string;
 }) {
+  await requireRole(["COORDINATOR"]);
+
+  const application = await prisma.eventApplication.findUnique({
+    where: { id: params.applicationId },
+  });
+
+  if (!application) {
+    const error: any = new Error("Not Found: Application not found");
+    error.status = 404;
+    throw error;
+  }
+
   await prisma.eventApplication.update({
     where: { id: params.applicationId },
     data: {
@@ -496,6 +681,80 @@ export async function flagApplicationByCoordinator(params: {
       coordinatorFlagNotes: params.flagNotes,
     },
   });
-  revalidatePath("/");
+
+  safeRevalidatePath("/");
   return { success: true };
+}
+
+// 11. Coordinator: Pre-provision User (Amendment 5)
+export async function provisionUser(data: {
+  name: string;
+  email: string;
+  role: "STUDENT" | "MENTOR" | "LECTURER";
+  department?: string;
+  semester?: number;
+  section?: string;
+  rollNumber?: string;
+  mentorId?: string;
+  githubUsername?: string;
+}) {
+  await requireRole(["COORDINATOR"]);
+
+  // Only STUDENT, MENTOR, LECTURER may be created via provisionUser
+  if (!["STUDENT", "MENTOR", "LECTURER"].includes(data.role)) {
+    const error: any = new Error("Forbidden: Only STUDENT, MENTOR, or LECTURER accounts may be provisioned.");
+    error.status = 403;
+    throw error;
+  }
+
+  const email = data.email.toLowerCase().trim();
+  const allowedDomain = (process.env.ALLOWED_EMAIL_DOMAIN || "college.edu").toLowerCase().trim();
+  const emailDomain = email.split("@")[1];
+
+  if (!emailDomain || emailDomain !== allowedDomain) {
+    const error: any = new Error(`Validation Error: Email must belong to the college domain @${allowedDomain}`);
+    error.status = 400;
+    throw error;
+  }
+
+  // Validate email uniqueness
+  const existing = await prisma.user.findFirst({
+    where: { email: { equals: email } },
+  });
+
+  if (existing) {
+    const error: any = new Error(`Conflict: A user with email ${email} already exists.`);
+    error.status = 409;
+    throw error;
+  }
+
+  // Validate that mentorId refers to an existing user with role MENTOR
+  if (data.mentorId) {
+    const mentor = await prisma.user.findUnique({
+      where: { id: data.mentorId },
+    });
+    if (!mentor || mentor.role !== "MENTOR") {
+      const error: any = new Error("Validation Error: mentorId must refer to an existing user with role MENTOR.");
+      error.status = 400;
+      throw error;
+    }
+  }
+
+  const newUser = await prisma.user.create({
+    data: {
+      name: data.name.trim(),
+      email,
+      role: data.role,
+      active: true,
+      department: data.department || null,
+      semester: data.semester ? Number(data.semester) : null,
+      section: data.section || null,
+      rollNumber: data.rollNumber || null,
+      githubUsername: data.githubUsername || null,
+      mentorId: data.mentorId || null,
+    },
+  });
+
+  safeRevalidatePath("/");
+  return { success: true, user: newUser };
 }

@@ -11,7 +11,10 @@ model User {
   id             String             @id @default(cuid())
   name           String
   email          String             @unique
+  emailVerified  DateTime?
+  image          String?
   role           String             // "STUDENT", "MENTOR", "COORDINATOR", "LECTURER"
+  active         Boolean            @default(true)
   department     String?
   semester       Int?
   section        String?
@@ -24,22 +27,28 @@ model User {
   baselines      AttendanceBaseline[]
   applications   EventApplication[]
   attendanceRecords ClassAttendanceRecord[]
+  reviewedApplications EventApplication[] @relation("ReviewedApplications")
+  baselineAuditsChanged BaselineAuditLog[] @relation("ChangerBaselineAudits")
+  baselineAuditsStudent BaselineAuditLog[] @relation("StudentBaselineAudits")
+  accounts       Account[]
+  sessions       Session[]
   createdAt      DateTime           @default(now())
   updatedAt      DateTime           @updatedAt
 }
 
 model Subject {
-  id          String             @id @default(cuid())
-  name        String
-  code        String             @unique
-  importance  String             @default("MEDIUM") // "HIGH", "MEDIUM", "LOW"
-  lecturerId  String?
-  lecturer    User?              @relation("LecturerSubjects", fields: [lecturerId], references: [id])
-  baselines   AttendanceBaseline[]
+  id             String             @id @default(cuid())
+  name           String
+  code           String             @unique
+  importance     String             @default("MEDIUM") // "HIGH", "MEDIUM", "LOW"
+  lecturerId     String?
+  lecturer       User?              @relation("LecturerSubjects", fields: [lecturerId], references: [id])
+  baselines      AttendanceBaseline[]
   timetableSlots TimetableSlot[]
   attendanceRecords ClassAttendanceRecord[]
-  createdAt   DateTime           @default(now())
-  updatedAt   DateTime           @updatedAt
+  baselineAudits BaselineAuditLog[]
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
 }
 
 model AttendanceBaseline {
@@ -53,6 +62,23 @@ model AttendanceBaseline {
   subject           Subject  @relation(fields: [subjectId], references: [id], onDelete: Cascade)
 
   @@unique([studentId, subjectId])
+}
+
+model BaselineAuditLog {
+  id           String   @id @default(cuid())
+  baselineId   String?
+  studentId    String
+  subjectId    String
+  changedById  String
+  oldConducted Int
+  oldAttended  Int
+  newConducted Int
+  newAttended  Int
+  changedAt    DateTime @default(now())
+
+  student   User    @relation("StudentBaselineAudits", fields: [studentId], references: [id], onDelete: Cascade)
+  subject   Subject @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+  changedBy User    @relation("ChangerBaselineAudits", fields: [changedById], references: [id], onDelete: Cascade)
 }
 
 model TimetableSlot {
@@ -108,6 +134,8 @@ model EventApplication {
   proofVerified       Boolean  @default(false)
   mentorRemarks       String?
   coordinatorFlagNotes String?
+  reviewedById        String?
+  reviewedBy          User?    @relation("ReviewedApplications", fields: [reviewedById], references: [id])
   student             User     @relation(fields: [studentId], references: [id], onDelete: Cascade)
   attendanceRecords   ClassAttendanceRecord[]
   createdAt           DateTime @default(now())
@@ -127,4 +155,39 @@ model ClassAttendanceRecord {
   application   EventApplication? @relation(fields: [applicationId], references: [id], onDelete: SetNull)
 
   @@unique([studentId, subjectId, date, slotStartTime])
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String?
+  access_token      String?
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String?
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
 }
